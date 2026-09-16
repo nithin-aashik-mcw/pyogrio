@@ -5,4 +5,5 @@ pyproj
 shapely>=2
 packaging
 # optional test dependencies
-pyarrow
+# pyarrow does not provide wheels for Windows arm64
+pyarrow; platform_system != "Windows" or platform_machine != "ARM64"
