@@ -240,6 +240,33 @@ jobs:
           vcpkg install --overlay-triplets=./ci/custom-triplets --feature-flags="versions,manifests" --x-manifest-root=./ci --x-install-root=$VCPKG_INSTALLATION_ROOT/installed
           vcpkg list
 
+      # shapely has no PyPI wheel for win_arm64 so the test-wheels job builds
+      # it from source; installing GDAL above already builds GEOS as one of
+      # its dependencies (see ci/vcpkg.json), so stage and share just the
+      # GEOS files here instead of having test-wheels install vcpkg all over
+      # again
+      - name: Stage GEOS files for test-wheels (Windows arm64)
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        shell: pwsh
+        run: |
+          $src = "C:\vcpkg\installed\${{ matrix.triplet }}"
+          $dest = "C:\geos-for-tests"
+          New-Item -ItemType Directory -Force -Path "$dest\include\geos", "$dest\lib", "$dest\bin" | Out-Null
+          Copy-Item "$src\include\geos.h" "$dest\include\"
+          Copy-Item "$src\include\geos_c.h" "$dest\include\"
+          Copy-Item "$src\include\geos\*" "$dest\include\geos\" -Recurse
+          Copy-Item "$src\lib\geos.lib" "$dest\lib\"
+          Copy-Item "$src\lib\geos_c.lib" "$dest\lib\"
+          Copy-Item "$src\bin\geos.dll" "$dest\bin\"
+          Copy-Item "$src\bin\geos_c.dll" "$dest\bin\"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        with:
+          name: pyogrio-geos-arm64-windows
+          path: C:\geos-for-tests
+          compression-level: 0
+
       - name: Upload vcpkg build logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
@@ -333,6 +360,41 @@ jobs:
           uv venv .venv
           "VIRTUAL_ENV=.venv" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$PWD/.venv/Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # shapely has no PyPI wheel for win_arm64, so pip/uv builds it from
+      # source; on Windows there is no geos-config and it needs
+      # GEOS_INCLUDE_PATH / GEOS_LIBRARY_PATH to find GEOS. Reuse the GEOS
+      # files already built as a GDAL dependency in build-wheels-mac-win
+      # instead of installing vcpkg again here.
+      - name: Download GEOS files (Windows arm64)
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: pyogrio-geos-arm64-windows
+          path: geos
+
+      - name: Set GEOS env vars (Windows arm64)
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        run: |
+          "GEOS_INCLUDE_PATH=$PWD/geos/include" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "GEOS_LIBRARY_PATH=$PWD/geos/lib" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Register GEOS DLL directory for Python (Windows arm64)
+        # PATH is not searched for extension-module DLL dependencies on
+        # Windows / Python >= 3.8; register the directory explicitly via a
+        # sitecustomize.py so shapely (built above) can find geos_c.dll
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        shell: pwsh
+        run: |
+          $sitePackages = Join-Path $PWD ".venv\Lib\site-packages"
+          $geosBin = Join-Path $PWD "geos\bin"
+          $lines = @(
+            "import os",
+            "_geos_bin = r'$geosBin'",
+            "if os.name == 'nt' and os.path.isdir(_geos_bin):",
+            "    os.add_dll_directory(_geos_bin)"
+          )
+          Set-Content -Path (Join-Path $sitePackages "sitecustomize.py") -Value $lines -Encoding utf8
 
       - name: Download wheels from artifacts
         uses: actions/download-artifact@v8
