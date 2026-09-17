@@ -97,7 +97,7 @@ if errorlevel 1 (echo [ERROR] git fetch in vcpkg failed & popd & exit /b 1)
 git checkout --quiet %VCPKG_COMMIT%
 if errorlevel 1 (echo [ERROR] git checkout of vcpkg commit %VCPKG_COMMIT% failed & popd & exit /b 1)
 if not exist "%VCPKG_ROOT%\vcpkg.exe" (
-    call bootstrap-vcpkg.bat -disableMetrics
+    call "%VCPKG_ROOT%\bootstrap-vcpkg.bat" -disableMetrics
     if errorlevel 1 (echo [ERROR] vcpkg bootstrap failed & popd & exit /b 1)
 )
 popd
