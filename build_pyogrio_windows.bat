@@ -1,17 +1,22 @@
 @echo off
 REM ============================================================================
 REM  Build and install pyogrio (+ benchmark dependencies) in a local .venv on
-REM  Windows ARM64, using GDAL built from source via vcpkg (pinned to the same
-REM  commit/manifest/triplet family pyogrio's own CI uses), then download the
-REM  benchmark datasets and run the benchmark suite.
+REM  Windows (x64 or ARM64), using GDAL built from source via vcpkg (pinned to
+REM  the same commit/manifest/triplet family pyogrio's own CI uses), then
+REM  download the benchmark datasets and run the benchmark suite.
 REM
 REM  Run this from a normal Command Prompt with this file placed at the root
-REM  of the pyogrio repo checkout (next to pyproject.toml).
+REM  of the pyogrio repo checkout (next to pyproject.toml). The target
+REM  architecture (x64 or arm64) is auto-detected from the machine; pass it
+REM  explicitly as the first argument to override, e.g.:
+REM      build_pyogrio_windows.bat x64
+REM      build_pyogrio_windows.bat arm64
 REM
 REM  Requirements on the machine before running:
-REM    - git, cmake, python (3.10+) on PATH
-REM    - Visual Studio 2022 Build Tools with the "MSVC v143 - VS 2022 C++
-REM      ARM64/ARM64EC build tools" component installed
+REM    - git, cmake, python (3.10+) on PATH, matching the target architecture
+REM    - Visual Studio 2022 Build Tools with the matching "MSVC v143 - VS 2022
+REM      C++ x64/x86 build tools" or "...ARM64/ARM64EC build tools" component
+REM      installed
 REM    - Internet access (vcpkg + PyPI + Natural Earth/USGS dataset downloads)
 REM  curl.exe and tar.exe are built into Windows 10/11 (both x64 and ARM64) and
 REM  are used here instead of any extra tools.
@@ -24,7 +29,6 @@ if "%REPO_DIR:~-1%"=="\" set "REPO_DIR=%REPO_DIR:~0,-1%"
 cd /d "%REPO_DIR%" || (echo [ERROR] Could not cd to "%REPO_DIR%" & exit /b 1)
 
 if not defined VCPKG_ROOT set "VCPKG_ROOT=C:\vcpkg"
-if not defined TRIPLET set "TRIPLET=arm64-windows-dynamic-release"
 if not defined VENV_DIR set "VENV_DIR=%REPO_DIR%\.venv"
 set "VCPKG_COMMIT=89dac9685f8d0ebd0a07d8b93ed51215c3a2fb2c"
 set "GDAL_VERSION=3.12.4"
@@ -42,6 +46,40 @@ if not exist "%REPO_DIR%\ci\vcpkg.json" (
     exit /b 1
 )
 echo OK
+
+REM ---------------------------------------------------------------------------
+REM  Determine target architecture: explicit first argument wins; otherwise
+REM  auto-detect the machine's *native* architecture. PROCESSOR_ARCHITECTURE
+REM  reflects the current process (e.g. "AMD64" for an x64 process running
+REM  under emulation on ARM64 Windows), while PROCESSOR_ARCHITEW6432 (set by
+REM  WOW64) reflects the true host architecture when the two differ.
+REM ---------------------------------------------------------------------------
+echo.
+echo === Determining target architecture ===
+if not "%~1"=="" (
+    set "ARCH=%~1"
+) else (
+    REM inside this ( ) block, variables set here must be read back with
+    REM delayed expansion (!VAR!) -- %VAR% would only see the pre-block value
+    set "HOST_ARCH=%PROCESSOR_ARCHITECTURE%"
+    if defined PROCESSOR_ARCHITEW6432 set "HOST_ARCH=%PROCESSOR_ARCHITEW6432%"
+    if /I "!HOST_ARCH!"=="AMD64" set "ARCH=x64"
+    if /I "!HOST_ARCH!"=="ARM64" set "ARCH=arm64"
+    if not defined ARCH (
+        echo [ERROR] Could not auto-detect a supported architecture from PROCESSOR_ARCHITECTURE="!HOST_ARCH!".
+        echo         Pass it explicitly: build_pyogrio_windows.bat x64  ^|  build_pyogrio_windows.bat arm64
+        exit /b 1
+    )
+)
+set "VALID_ARCH="
+if /I "%ARCH%"=="x64" set "VALID_ARCH=1"
+if /I "%ARCH%"=="arm64" set "VALID_ARCH=1"
+if not defined VALID_ARCH (
+    echo [ERROR] Unsupported architecture "%ARCH%". Expected x64 or arm64.
+    exit /b 1
+)
+set "TRIPLET=%ARCH%-windows-dynamic-release"
+echo Target architecture: %ARCH%  ^(triplet: %TRIPLET%^)
 
 REM ---------------------------------------------------------------------------
 REM  1. Fetch and bootstrap vcpkg, pinned to the commit pyogrio's CI uses
@@ -67,9 +105,9 @@ echo OK
 
 REM ---------------------------------------------------------------------------
 REM  2. Build GDAL (+ GEOS, PROJ, sqlite3, curl, libkml, spatialite, etc.) via
-REM     vcpkg, using pyogrio's own manifest and custom ARM64 triplet. This is
-REM     the long step: it compiles GDAL and its dependencies from source and
-REM     can take 45-90+ minutes.
+REM     vcpkg, using pyogrio's own manifest and the custom triplet for the
+REM     detected architecture. This is the long step: it compiles GDAL and its
+REM     dependencies from source and can take 45-90+ minutes.
 REM ---------------------------------------------------------------------------
 echo.
 echo === Building GDAL %GDAL_VERSION% for triplet %TRIPLET% via vcpkg ===
@@ -147,9 +185,11 @@ echo OK
 REM ---------------------------------------------------------------------------
 REM  7. Install benchmark/test dependencies.
 REM
-REM     shapely and fiona do not currently publish win_arm64 wheels on PyPI,
-REM     so pip falls back to building them from source here. Both are wired
-REM     up against the same vcpkg-built GEOS/GDAL:
+REM     shapely and fiona both publish win_amd64 (x64) wheels on PyPI, so on
+REM     an x64 machine pip just uses those directly. Neither currently
+REM     publishes a win_arm64 wheel though, so on ARM64 pip falls back to
+REM     building them from source here; both are wired up against the same
+REM     vcpkg-built GEOS/GDAL to make that fallback work either way:
 REM       - shapely's setup.py reads GEOS_INCLUDE_PATH/GEOS_LIBRARY_PATH
 REM         directly (set above).
 REM       - fiona's setup.py has no such env-var hook on Windows, so its
