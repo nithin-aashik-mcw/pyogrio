@@ -184,6 +184,13 @@ jobs:
             vcpkg_cache: "c:\\vcpkg\\installed"
             vcpkg_logs: "c:\\vcpkg\\buildtrees\\**\\*.log"
 
+          - os: "windows-11-arm"
+            triplet: "arm64-windows-dynamic-release"
+            arch: ARM64
+            # windows requires windows-specific paths
+            vcpkg_cache: "c:\\vcpkg\\installed"
+            vcpkg_logs: "c:\\vcpkg\\buildtrees\\**\\*.log"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -233,6 +240,30 @@ jobs:
           vcpkg install --overlay-triplets=./ci/custom-triplets --feature-flags="versions,manifests" --x-manifest-root=./ci --x-install-root=$VCPKG_INSTALLATION_ROOT/installed
           vcpkg list
 
+      # shapely has no win_arm64 wheel; share the GEOS built above with
+      # test-wheels instead of it installing vcpkg again
+      - name: Stage GEOS files for test-wheels (Windows arm64)
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        shell: pwsh
+        run: |
+          $src = "C:\vcpkg\installed\${{ matrix.triplet }}"
+          $dest = "C:\geos-for-tests"
+          New-Item -ItemType Directory -Force -Path "$dest\include\geos", "$dest\lib", "$dest\bin" | Out-Null
+          Copy-Item "$src\include\geos.h" "$dest\include\"
+          Copy-Item "$src\include\geos_c.h" "$dest\include\"
+          Copy-Item "$src\include\geos\*" "$dest\include\geos\" -Recurse
+          Copy-Item "$src\lib\geos.lib" "$dest\lib\"
+          Copy-Item "$src\lib\geos_c.lib" "$dest\lib\"
+          Copy-Item "$src\bin\geos.dll" "$dest\bin\"
+          Copy-Item "$src\bin\geos_c.dll" "$dest\bin\"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        with:
+          name: pyogrio-geos-arm64-windows
+          path: C:\geos-for-tests
+          compression-level: 0
+
       - name: Upload vcpkg build logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
@@ -266,10 +297,16 @@ jobs:
             "ubuntu-22.04",
             "ubuntu-24.04-arm",
             "windows-latest",
+            "windows-11-arm",
             "macos-15-intel",
             "macos-latest",
           ]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]
+        exclude:
+          # official Python installers for Windows ARM64 are only available
+          # starting with 3.11
+          - os: "windows-11-arm"
+            python-version: "3.10"
         include:
           - os: "ubuntu-latest"
             artifact: pyogrio-wheel-linux-manylinux2014_x86_64
@@ -281,6 +318,8 @@ jobs:
             artifact: pyogrio-wheel-linux-manylinux_2_28_aarch64
           - os: "windows-latest"
             artifact: pyogrio-wheel-x64-windows-dynamic-release
+          - os: "windows-11-arm"
+            artifact: pyogrio-wheel-arm64-windows-dynamic-release
           - os: "macos-15-intel"
             artifact: pyogrio-wheel-x64-osx-dynamic-release
           - os: "macos-latest"
@@ -318,6 +357,37 @@ jobs:
           uv venv .venv
           "VIRTUAL_ENV=.venv" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$PWD/.venv/Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # shapely builds from source here; reuse the GEOS files staged by
+      # build-wheels-mac-win instead of installing vcpkg again
+      - name: Download GEOS files (Windows arm64)
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: pyogrio-geos-arm64-windows
+          path: geos
+
+      - name: Set GEOS env vars (Windows arm64)
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        run: |
+          "GEOS_INCLUDE_PATH=$PWD/geos/include" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "GEOS_LIBRARY_PATH=$PWD/geos/lib" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Register GEOS DLL directory for Python (Windows arm64)
+        # Register via sitecustomize.py so shapely can find geos_c.dll,
+        # since PATH isn't searched for DLL deps on Python >= 3.8
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        shell: pwsh
+        run: |
+          $sitePackages = Join-Path $PWD ".venv\Lib\site-packages"
+          $geosBin = Join-Path $PWD "geos\bin"
+          $lines = @(
+            "import os",
+            "_geos_bin = r'$geosBin'",
+            "if os.name == 'nt' and os.path.isdir(_geos_bin):",
+            "    os.add_dll_directory(_geos_bin)"
+          )
+          Set-Content -Path (Join-Path $sitePackages "sitecustomize.py") -Value $lines -Encoding utf8
 
       - name: Download wheels from artifacts
         uses: actions/download-artifact@v8
