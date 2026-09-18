@@ -48,6 +48,40 @@ if not exist "%REPO_DIR%\ci\vcpkg.json" (
 echo OK
 
 REM ---------------------------------------------------------------------------
+REM  Some machines (e.g. with depot_tools on PATH) have a "git.bat"/"git.cmd"
+REM  shim ahead of the real Git for Windows git.exe. That breaks things in two
+REM  ways: (1) any bare, non-"call"ed "git ..." in this script would silently
+REM  abort the rest of the script the moment it hit such a shim, since running
+REM  a batch file from inside a batch file without CALL never returns control;
+REM  and (2) vcpkg.exe's own internal git invocations (which we don't control)
+REM  would resolve to the shim too and can fail outright. Look up the real
+REM  git.exe specifically (bypassing any .bat/.cmd shim) and, if it isn't
+REM  already the one PATH would resolve to, move its directory to the front of
+REM  PATH for the remainder of this script and its child processes.
+REM ---------------------------------------------------------------------------
+for /f "delims=" %%G in ('where git.exe 2^>nul') do (
+    set "REAL_GIT_EXE=%%G"
+    goto :after_find_git_exe
+)
+:after_find_git_exe
+if not defined REAL_GIT_EXE (
+    echo [ERROR] Could not locate a real git.exe on PATH.
+    exit /b 1
+)
+for %%G in ("%REAL_GIT_EXE%") do set "REAL_GIT_DIR=%%~dpG"
+if /I not "!REAL_GIT_DIR:~-1!"=="\" set "REAL_GIT_DIR=!REAL_GIT_DIR!\"
+where git >nul 2>&1
+for /f "delims=" %%G in ('where git 2^>nul') do (
+    set "RESOLVED_GIT=%%G"
+    goto :after_resolve_git
+)
+:after_resolve_git
+if /I not "!RESOLVED_GIT!"=="!REAL_GIT_EXE!" (
+    echo Prioritizing real git.exe at "!REAL_GIT_DIR!" ^(found non-.exe git shim earlier on PATH: "!RESOLVED_GIT!"^)
+    set "PATH=!REAL_GIT_DIR!;%PATH%"
+)
+
+REM ---------------------------------------------------------------------------
 REM  Determine target architecture: explicit first argument wins; otherwise
 REM  auto-detect the machine's *native* architecture. PROCESSOR_ARCHITECTURE
 REM  reflects the current process (e.g. "AMD64" for an x64 process running
@@ -87,14 +121,14 @@ REM ---------------------------------------------------------------------------
 echo.
 echo === Setting up vcpkg at "%VCPKG_ROOT%" ===
 if not exist "%VCPKG_ROOT%\.git" (
-    git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
+    call git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
     if errorlevel 1 (echo [ERROR] git clone of vcpkg failed & exit /b 1)
 )
 
 pushd "%VCPKG_ROOT%"
-git fetch --quiet origin
+call git fetch --quiet origin
 if errorlevel 1 (echo [ERROR] git fetch in vcpkg failed & popd & exit /b 1)
-git checkout --quiet %VCPKG_COMMIT%
+call git checkout --quiet %VCPKG_COMMIT%
 if errorlevel 1 (echo [ERROR] git checkout of vcpkg commit %VCPKG_COMMIT% failed & popd & exit /b 1)
 if not exist "%VCPKG_ROOT%\vcpkg.exe" (
     call "%VCPKG_ROOT%\bootstrap-vcpkg.bat" -disableMetrics
